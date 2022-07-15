@@ -1,0 +1,205 @@
+---
+title: "Validation"
+author: "Ansaar Dollie"
+date: "07/07/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(caret)
+library(glmnet)
+
+```
+
+# Validations (Expected Deaths' Model)
+
+```{r}
+# rm(list=lm()) #Clear all objects from memory
+
+weekly=T
+
+
+files = dir("./data/historical-deaths")
+
+for (file in files) {
+
+  path = paste("./data/historical-deaths/",file)
+  data = read.csv(path)
+
+  weekly = colnames(data)[8] == "week"
+  colnames(data)[8] = "time"
+  data$time = as.factor(data$time)
+  num_regions = length(unique(data$region))
+
+  lm_formula = as.formula(total_deaths_per_day ~ year + time)
+  glm_formula = as.formula(total_deaths ~ year + time)
+  if (num_regions > 1) {
+    stop("Using regional data disallowed")
+  }
+
+  if (weekly) {
+    week_53_df = data %>%
+      filter(time %in% c("52","53")) %>% mutate(time = "53", week_53 = 1)
+    train_df = data %>%
+      filter(time != "53") %>%
+      bind_rows(week_53_df) %>%
+      filter(year < 2020) %>%
+      mutate(total_deaths_per_day = total_deaths / days)
+  } else {
+    train_df = data %>%
+      filter(year < 2020) %>%
+      mutate(total_deaths_per_day = total_deaths / days)
+  }
+
+
+  test_df = data %>% filter(year >= 2020)
+
+  TimeOHEC = model.matrix(~0+time,data=train_df)
+  X = cbind(train_df$year, TimeOHEC)
+  Y = as.matrix(train_df$total_deaths_per_day)
+  Y_glm = as.matrix(train_df$total_deaths)
+
+  lambdas = 10^(seq(-5,5,by=0.01))
+
+
+  lm_mod = lm(lm_formula, data = train_df)
+  ridge_lm_models = cv.glmnet(X,Y,alpha=0,lambda=lambdas)
+  lasso_lm_models = cv.glmnet(X,Y,alpha=1,lambda=lambdas)
+  rlm_min_lambda = ridge_lm_models$lambda.min
+  llm_min_lambda = lasso_lm_models$lambda.min
+  ridge_lm_mod = glmnet(X,Y,alpha=0,lambda=rlm_min_lambda)
+  lasso_lm_mod = glmnet(X,Y,alpha=1,lambda=llm_min_lambda)
+
+  glm_mod1 = glm(glm_formula, data = train_df, family = poisson(link = "log"))
+  glm_mod2 = glm(glm_formula, data = train_df, family = poisson(link="identity"))
+  glm_mod3 = glm(glm_formula,data = train_df, family = poisson(link="sqrt"))
+
+  ridge_glm1_models = cv.glmnet(X,Y_glm,alpha=0,lambda=lambdas,family=poisson(link="log"))
+  ridge_glm2_models = cv.glmnet(X,Y_glm,alpha=0,lambda=lambdas,family=poisson(link="identity"))
+  ridge_glm3_models = cv.glmnet(X,Y_glm,alpha=0,lambda=lambdas,family=poisson(link="sqrt"))
+
+  lasso_glm1_models = cv.glmnet(X,Y_glm,alpha=1,lambda=lambdas,family=poisson(link="log"))
+  lasso_glm2_models = cv.glmnet(X,Y_glm,alpha=1,lambda=lambdas,family=poisson(link="identity"))
+  lasso_glm3_models = cv.glmnet(X,Y_glm,alpha=1,lambda=lambdas,family=poisson(link="sqrt"))
+
+  rglm1_min_lambda = ridge_glm1_models$lambda.min
+  rglm2_min_lambda = ridge_glm2_models$lambda.min
+  rglm3_min_lambda = ridge_glm3_models$lambda.min
+
+  lglm1_min_lambda = lasso_glm1_models$lambda.min
+  lglm2_min_lambda = lasso_glm2_models$lambda.min
+  lglm3_min_lambda = lasso_glm3_models$lambda.min
+
+
+
+  ridge_glm1_mod = glmnet(X,Y_glm,alpha=0,lambda = rglm1_min_lambda,family = poisson(link="log"))
+  ridge_glm2_mod = glmnet(X,Y_glm,alpha=0,lambda = rglm2_min_lambda,family = poisson(link="identity"))
+  ridge_glm3_mod = glmnet(X,Y_glm,alpha=0,lambda = rglm3_min_lambda,family = poisson(link="sqrt"))
+
+  lasso_glm1_mod = glmnet(X,Y_glm,alpha=1,lambda=lglm1_min_lambda,family=poisson(link="log"))
+  lasso_glm2_mod = glmnet(X,Y_glm,alpha=1,lambda=lglm2_min_lambda,family=poisson(link="identity"))
+  lasso_glm3_mod = glmnet(X,Y_glm,alpha=1,lambda=lglm3_min_lambda,family=poisson(link="sqrt"))
+
+  crit.val = qnorm(0.025,low=F)
+
+  lm_pred = predict(lm_mod,newdata = test_df,se.fit=T)
+
+  lm_expected = lm_pred$fit * test_df$days
+  lm_upper = (lm_pred$fit + crit.val * lm_pred$se.fit) * test_df$days
+  lm_lower = (lm_pred$fit - crit.val * lm_pred$se.fit) * test_df$days
+
+  n_y = nrow(test_df)
+
+  glm1_pred = predict(glm_mod1,newdata = test_df,type="link", se.fit=T)
+  glm2_pred = predict(glm_mod2,newdata = test_df,type="link", se.fit=T)
+  glm3_pred = predict(glm_mod3,newdata = test_df,type="link", se.fit=T)
+
+  glm1_expected = exp(glm1_pred$fit)
+  glm2_expected = glm2_pred$fit
+  glm3_expected = (glm3_pred$fit)^2
+
+
+
+  glm1_bounds = exp(glm1_pred$fit + cbind(rep(1,n_y),rep(-1,n_y)) * crit.val * glm1_pred$se.fit)
+  glm2_bounds = glm2_pred$fit + cbind(rep(1,n_y),rep(-1,n_y)) * crit.val * glm2_pred$se.fit
+  glm3_bounds = (glm3_pred$fit + cbind(rep(1,n_y),rep(-1,n_y)) * crit.val * glm3_pred$se.fit)^2
+
+  test_TimeOHEC = model.matrix(~0+time,data=test_df)
+  test_X = cbind(test_df$year,test_TimeOHEC)
+
+  rlm_expected = predict(ridge_lm_mod,s=rlm_min_lambda,newx=test_X) * 7
+  llm_expected = predict(lasso_lm_mod,s=llm_min_lambda,newx=test_X) * 7
+
+  rglm1_expected = predict(ridge_glm1_mod,s=rglm1_min_lambda,newx=test_X,type="response")
+  rglm2_expected = predict(ridge_glm2_mod,s=rglm2_min_lambda,newx=test_X,type="response")
+  rglm3_expected = predict(ridge_glm3_mod,s=rglm3_min_lambda,newx=test_X,type="response")
+  lglm1_expected = predict(lasso_glm1_mod,s=lglm1_min_lambda,newx=test_X,type="response")
+  lglm2_expected = predict(lasso_glm2_mod,s=lglm2_min_lambda,newx=test_X,type="response")
+  lglm3_expected = predict(lasso_glm3_mod,s=lglm3_min_lambda,newx=test_X,type="response")
+
+
+  output = test_df %>% mutate(
+    ols_ex = lm_expected,
+    ols_ex_lb = lm_lower,
+    ols_ex_ub = lm_upper,
+    glm_log_ex = glm1_expected,
+    glm_log_ex_lb = glm1_bounds[,2],
+    glm_log_ex_ub = glm1_bounds[,1],
+    glm_iden_ex = glm2_expected,
+    glm_iden_ex_lb = glm2_bounds[,2],
+    glm_iden_ex_ub = glm2_bounds[,1],
+    glm_sqrt_ex = glm3_expected,
+    glm_sqrt_ex_lb = glm3_bounds[,2],
+    glm_sqrt_ex_lb = glm3_bounds[,1],
+    ridge_ex = rlm_expected,
+    rglm_log_ex = rglm1_expected,
+    rglm_iden_ex = rglm2_expected,
+    rglm_sqrt_ex = rglm3_expected,
+    lasso_ex = llm_expected,
+    lglm_log_ex = lglm1_expected,
+    lglm_iden_ex = lglm2_expected,
+    lglm_sqrt_ex = lglm3_expected,
+    ols_ed = pmax(0,total_deaths - lm_expected),
+    ols_ed_lb = pmax(0,total_deaths - lm_lower),
+    ols_ed_ub = pmax(0,total_deaths - lm_upper),
+     glm_log_ed = pmax(0,total_deaths - glm1_expected),
+     glm_log_ed_lb = pmax(0,total_deaths - glm1_bounds[,2]),
+     glm_log_ed_ub = pmax(0,total_deaths - glm1_bounds[,1]),
+     glm_iden_ed = pmax(0,total_deaths - glm2_expected),
+     glm_iden_ed_lb = pmax(0,total_deaths - glm2_bounds[,2]),
+    glm_iden_ed_ub = pmax(0,total_deaths - glm2_bounds[,1]),
+     glm_sqrt_ed = pmax(0,total_deaths - glm3_expected),
+     glm_sqrt_ed_lb = pmax(0,total_deaths - glm3_bounds[,2]),
+     glm_sqrt_ed_ub = pmax(0,total_deaths - glm3_bounds[,1]),
+    ridge_ed = pmax(0,total_deaths - rlm_expected),
+    rglm_log_ed = pmax(0,total_deaths - rglm1_expected),
+    rglm_iden_ed = pmax(0,total_deaths - rglm2_expected),
+    rglm_sqrt_ed = pmax(0,total_deaths - rglm3_expected),
+    lasso_ed = pmax(0,total_deaths - llm_expected),
+    lglm_log_ed = pmax(0,total_deaths - lglm1_expected),
+    lglm_iden_ed = pmax(0,total_deaths - lglm2_expected),
+    lglm_sqrt_ed = pmax(0,total_deaths - lglm3_expected),
+  )
+
+  View(output[,-c(1,2,3,6,9,12)])
+
+
+  path = paste("~/Projects/pwcrp_validation/data/output (",Sys.time(),").csv",sep="")
+  write.csv(output,file=path)
+
+
+
+
+}
+
+
+
+
+
+
+```

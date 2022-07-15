@@ -1,0 +1,92 @@
+---
+title: "Residuals"
+author: "Ansaar Dollie"
+date: "15/07/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(caret)
+library(glmnet)
+
+```
+
+
+```{r}
+
+
+files = dir("./data/historical-deaths")
+
+r2 = data.frame(country=c(),r_squared=c(), pop=c())
+
+for(file in files) {
+  
+  path = paste("./data/historical-deaths/",file,sep="")
+  data = read.csv(path)
+  print(path)
+  freq = colnames(data)[8]
+  weekly= freq == "week"
+
+  colnames(data)[8] = "time"
+  data$time = as.factor(data$time)
+  country = data$country[1]
+  num_regions = length(unique(data$region))
+
+  lm_formula = as.formula(total_deaths_per_day ~ year + time)
+  glm_formula = as.formula(total_deaths ~ year + time)
+  if (num_regions > 1) {
+    stop("Using regional data disallowed")
+  }
+
+  if (weekly) {
+    week_53_df = data %>%
+      filter(time %in% c("52","53")) %>% mutate(time = "53", week_53 = 1)
+    train_df = data %>%
+      filter(time != "53") %>%
+      bind_rows(week_53_df) %>%
+      filter(year < 2020) %>%
+      mutate(total_deaths_per_day = total_deaths / days)
+  } else {
+    train_df = data %>%
+      filter(year < 2020) %>%
+      mutate(total_deaths_per_day = total_deaths / days)
+  }
+
+
+
+  test_df = data %>% filter(year >= 2020)
+
+  lm_mod = lm(lm_formula, data = train_df)
+  sum_mod = summary(lm_mod)
+
+
+  
+
+  qq_name = paste("Residuals QQ -",country," - ",freq)
+  qq_path = paste("./output/qq/",qq_name,".png",sep="")
+  hist_name = paste("Residuals Histogram -",country, " - ", freq)
+  hist_path = paste("./output/hist/",hist_name,".png",sep="")
+  qq_main = paste("Residual Q-Q Plot (",country, ")",sep="")
+  his_main = paste("Histogram Of Residuals (",country,")",sep="")
+  png(qq_path)
+  qqnorm(res,main=qq_main)
+  qqline(res,col="red",lwd=2)
+  dev.off()
+
+  png(hist_path)
+  hist(res,breaks=seq(min(res),max(res),length.out=10),probability = T, main=his_main)
+  curve(dnorm(x,0,sum_mod$sigma),add=T)
+  dev.off()
+  
+  r2 = rbind(r2,c(country,as.numeric(sum_mod$r.squared),as.numeric(pop)))
+}
+
+colnames(r2) = c("Country","r","population")
+r2 = r2[order(r2$r),]
+```
+
